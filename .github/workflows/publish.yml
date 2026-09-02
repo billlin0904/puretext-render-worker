@@ -36,3 +36,8 @@ jobs:
             billlin0904/puretext-render-worker:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Verify public image pull
+        run: |
+          docker logout
+          docker pull billlin0904/puretext-render-worker:0.1.2
