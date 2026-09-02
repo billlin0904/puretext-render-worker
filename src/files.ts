@@ -64,6 +64,20 @@ export async function ensureFonts(fonts: RemoteFont[], root: string, maxBytes: n
 export async function uploadFile(target: UploadTarget, filePath: string, size: number): Promise<void> {
   const uploadUrl = new URL(target.uploadUrl);
   if (uploadUrl.protocol !== "https:") throw new Error("upload URL must use HTTPS");
+  const signedHeaders = new Set(
+    (uploadUrl.searchParams.get("X-Amz-SignedHeaders")
+      ?? uploadUrl.searchParams.get("x-amz-signedheaders")
+      ?? "")
+      .toLowerCase()
+      .split(";")
+      .filter(Boolean),
+  );
+  const allowedTargetHeaders = Object.fromEntries(
+    Object.entries(target.headers).filter(([name]) => {
+      const normalized = name.toLowerCase();
+      return !normalized.startsWith("x-amz-") || signedHeaders.has(normalized);
+    }),
+  );
 
   // Use the native HTTP client so a large stream is sent with an exact
   // Content-Length. Some S3-compatible endpoints reject fetch/undici's
@@ -75,7 +89,7 @@ export async function uploadFile(target: UploadTarget, filePath: string, size: n
       headers: {
         "content-length": String(size),
         "content-type": "video/mp4",
-        ...target.headers,
+        ...allowedTargetHeaders,
       },
       signal: AbortSignal.timeout(60 * 60_000),
     }, (response) => {
