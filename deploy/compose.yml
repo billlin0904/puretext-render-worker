@@ -1,0 +1,25 @@
+name: puretext-render-worker
+
+services:
+  render-worker:
+    image: ${RENDER_WORKER_IMAGE:-billlin0904/puretext-render-worker:stable}
+    restart: unless-stopped
+    gpus: all
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PURETEXT_API_BASE: ${PURETEXT_API_BASE:?PURETEXT_API_BASE must be set}
+      RENDER_WORKER_ID: ${RENDER_WORKER_ID:?RENDER_WORKER_ID must be set}
+      RENDER_WORKER_TOKEN: ${RENDER_WORKER_TOKEN:?RENDER_WORKER_TOKEN must be set}
+      VIDEO_ENCODER_MODE: nvenc
+      VIDEO_RENDER_CONCURRENCY: ${VIDEO_RENDER_CONCURRENCY:-2}
+      RENDER_CACHE_ROOT: /var/lib/puretext-render-worker
+    volumes:
+      - ${RENDER_CACHE_HOST_PATH:-./data}:/var/lib/puretext-render-worker
+    healthcheck:
+      test: ["CMD", "node", "/app/healthcheck.mjs"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

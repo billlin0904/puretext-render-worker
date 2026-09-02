@@ -1,0 +1,8 @@
+.env
+deploy/.env
+data/
+dist/
+node_modules/
+*.log
+*.mp4
+*.part
