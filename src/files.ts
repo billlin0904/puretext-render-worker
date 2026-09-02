@@ -73,7 +73,7 @@ export async function uploadFile(target: UploadTarget, filePath: string, size: n
       .filter(Boolean),
   );
   const allowedTargetHeaders = Object.fromEntries(
-    Object.entries(target.headers).filter(([name]) => {
+    Object.entries(target.headers ?? {}).filter(([name]) => {
       const normalized = name.toLowerCase();
       return !normalized.startsWith("x-amz-") || signedHeaders.has(normalized);
     }),
