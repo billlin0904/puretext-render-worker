@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import https from "node:https";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -61,13 +62,44 @@ export async function ensureFonts(fonts: RemoteFont[], root: string, maxBytes: n
 }
 
 export async function uploadFile(target: UploadTarget, filePath: string, size: number): Promise<void> {
-  const request = {
-    method: "PUT",
-    headers: { "content-length": String(size), "content-type": "video/mp4", ...target.headers },
-    body: fs.createReadStream(filePath),
-    duplex: "half",
-    signal: AbortSignal.timeout(60 * 60_000),
-  } as unknown as RequestInit;
-  const response = await fetch(target.uploadUrl, request);
-  if (!response.ok) throw new Error(`upload failed with HTTP ${response.status}`);
+  const uploadUrl = new URL(target.uploadUrl);
+  if (uploadUrl.protocol !== "https:") throw new Error("upload URL must use HTTPS");
+
+  // Use the native HTTP client so a large stream is sent with an exact
+  // Content-Length. Some S3-compatible endpoints reject fetch/undici's
+  // streaming request framing with SignatureDoesNotMatch (HTTP 403).
+  await new Promise<void>((resolve, reject) => {
+    const source = fs.createReadStream(filePath);
+    const request = https.request(uploadUrl, {
+      method: "PUT",
+      headers: {
+        "content-length": String(size),
+        "content-type": "video/mp4",
+        ...target.headers,
+      },
+      signal: AbortSignal.timeout(60 * 60_000),
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      let responseBytes = 0;
+      response.on("data", (chunk: Buffer | string) => {
+        if (responseBytes >= 4_096) return;
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        const remaining = 4_096 - responseBytes;
+        chunks.push(buffer.subarray(0, remaining));
+        responseBytes += Math.min(buffer.length, remaining);
+      });
+      response.on("end", () => {
+        const status = response.statusCode ?? 0;
+        if (status >= 200 && status < 300) {
+          resolve();
+          return;
+        }
+        const detail = Buffer.concat(chunks).toString("utf8").replace(/\s+/g, " ").trim();
+        reject(new Error(`upload failed with HTTP ${status}${detail ? `: ${detail}` : ""}`));
+      });
+    });
+    source.on("error", reject);
+    request.on("error", reject);
+    source.pipe(request);
+  });
 }
