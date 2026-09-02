@@ -47,7 +47,7 @@ docker compose up -d --remove-orphans
 目前映像：
 
 ```text
-billlin0904/puretext:render-worker-0.1.1
+billlin0904/puretext:render-worker-0.1.2
 billlin0904/puretext:render-worker-latest
 ```
 

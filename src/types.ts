@@ -31,11 +31,25 @@ export type UploadTarget = {
   headers?: Record<string, string>;
 };
 
+export type GpuTelemetry = {
+  gpuCount: number;
+  gpuName: string;
+  gpuUtilizationPercent: number | null;
+  gpuMemoryUsedMb: number | null;
+  gpuMemoryTotalMb: number | null;
+  gpuMemoryPercent: number | null;
+  gpuTemperatureC: number | null;
+  gpuPowerWatts: number | null;
+  gpuEncoderUtilizationPercent: number | null;
+  sampledAt: string;
+};
+
 export type WorkerStatus = {
   workerId: string;
   activeJobs: string[];
   concurrency: number;
   version: string;
+  telemetry?: GpuTelemetry;
 };
 
 function remoteHttpsUrl(value: unknown, field: string): string {

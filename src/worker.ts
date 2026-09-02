@@ -4,15 +4,18 @@ import path from "node:path";
 import { ApiClient } from "./apiClient.js";
 import type { WorkerConfig } from "./config.js";
 import { downloadFile, ensureFonts, hashFile, uploadFile } from "./files.js";
+import { collectGpuTelemetry } from "./gpuTelemetry.js";
 import { logger } from "./logger.js";
 import { parseVideoRenderOptions, parseVideoRenderSpec, renderSubtitleVideo } from "./renderer/subtitleVideoRenderer.js";
-import type { ClaimedRenderJob, WorkerStatus } from "./types.js";
+import type { ClaimedRenderJob, GpuTelemetry, WorkerStatus } from "./types.js";
 
 export class RenderWorker {
   private readonly api: ApiClient;
   private readonly active = new Map<string, ClaimedRenderJob>();
   private stopping = false;
   private lastClaimAttempt = Date.now();
+  private telemetry: GpuTelemetry | undefined;
+  private telemetryPending = false;
 
   constructor(private readonly config: WorkerConfig) {
     this.api = new ApiClient(config.apiBase, config.token);
@@ -24,6 +27,7 @@ export class RenderWorker {
       activeJobs: [...this.active.keys()],
       concurrency: this.config.concurrency,
       version: this.config.version,
+      ...(this.telemetry ? { telemetry: this.telemetry } : {}),
     };
   }
 
@@ -37,14 +41,28 @@ export class RenderWorker {
 
   async run(): Promise<void> {
     await fs.promises.mkdir(path.join(this.config.cacheRoot, "tmp"), { recursive: true });
+    await this.refreshTelemetry();
     const heartbeat = setInterval(() => {
-      void this.api.heartbeat(this.status()).catch((error) => logger.warn({ err: error }, "worker heartbeat failed"));
+      void this.refreshTelemetry()
+        .then(() => this.api.heartbeat(this.status()))
+        .catch((error) => logger.warn({ err: error }, "worker heartbeat failed"));
     }, 20_000);
     heartbeat.unref();
     try {
       await Promise.all(Array.from({ length: this.config.concurrency }, (_, slot) => this.slot(slot + 1)));
     } finally {
       clearInterval(heartbeat);
+    }
+  }
+
+  private async refreshTelemetry(): Promise<void> {
+    if (this.telemetryPending) return;
+    this.telemetryPending = true;
+    try {
+      const telemetry = await collectGpuTelemetry();
+      if (telemetry) this.telemetry = telemetry;
+    } finally {
+      this.telemetryPending = false;
     }
   }
 
