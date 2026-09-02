@@ -39,6 +39,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     cacheRoot: path.resolve(env["RENDER_CACHE_ROOT"]?.trim() || "/var/lib/puretext-render-worker"),
     healthPort: boundedInteger(env["HEALTH_PORT"], 9090, 1024, 65535),
     maxInputBytes: boundedInteger(env["VIDEO_RENDER_MAX_INPUT_BYTES"], 10 * 1024 ** 3, 1, 50 * 1024 ** 3),
-    version: env["RENDER_WORKER_VERSION"]?.trim() || "0.1.2",
+    version: env["RENDER_WORKER_VERSION"]?.trim() || "0.1.3",
   };
 }
