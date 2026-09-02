@@ -29,7 +29,7 @@ case "${1:-status}" in
     : "${PURETEXT_API_BASE:?PURETEXT_API_BASE must be set}"
     : "${RENDER_WORKER_TOKEN:?RENDER_WORKER_TOKEN must be set}"
     cd "$INSTALL_DIR"
-    nohup /usr/bin/tini -- node --enable-source-maps dist/src/index.js >>"$LOG_FILE" 2>&1 &
+    nohup /usr/bin/tini -- node --enable-source-maps dist/src/index.js </dev/null >>"$LOG_FILE" 2>&1 &
     echo $! >"$PID_FILE"
     sleep 2
     if ! is_running; then
@@ -61,7 +61,7 @@ case "${1:-status}" in
   status)
     if is_running; then
       echo "Worker is running (PID $(cat "$PID_FILE"))."
-      curl -fsS "http://127.0.0.1:${HEALTH_PORT:-8080}/health" || true
+      curl -fsS "http://127.0.0.1:${HEALTH_PORT:-8080}/healthz" || true
       echo
     else
       echo "Worker is not running."
