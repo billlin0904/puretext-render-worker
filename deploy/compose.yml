@@ -2,7 +2,7 @@ name: puretext-render-worker
 
 services:
   render-worker:
-    image: ${RENDER_WORKER_IMAGE:-billlin0904/puretext:render-worker-0.1.0}
+    image: ${RENDER_WORKER_IMAGE:-billlin0904/puretext:render-worker-0.1.1}
     restart: unless-stopped
     gpus: all
     env_file:
@@ -15,6 +15,7 @@ services:
       VIDEO_ENCODER_MODE: nvenc
       VIDEO_RENDER_CONCURRENCY: ${VIDEO_RENDER_CONCURRENCY:-2}
       RENDER_CACHE_ROOT: /var/lib/puretext-render-worker
+      RENDER_ALLOW_INSECURE_HTTP: ${RENDER_ALLOW_INSECURE_HTTP:-false}
     volumes:
       - ${RENDER_CACHE_HOST_PATH:-./data}:/var/lib/puretext-render-worker
     read_only: true

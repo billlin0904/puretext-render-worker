@@ -41,7 +41,11 @@ export type WorkerStatus = {
 function remoteHttpsUrl(value: unknown, field: string): string {
   if (typeof value !== "string" || value.length > 8_192) throw new Error(`Invalid ${field}`);
   const parsed = new URL(value);
-  if (parsed.protocol !== "https:" && parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") {
+  const allowInsecureHttp = process.env["RENDER_ALLOW_INSECURE_HTTP"] === "true";
+  if (parsed.protocol !== "https:"
+    && parsed.hostname !== "127.0.0.1"
+    && parsed.hostname !== "localhost"
+    && !allowInsecureHttp) {
     throw new Error(`${field} must use HTTPS`);
   }
   return value;
