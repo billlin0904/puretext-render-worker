@@ -5,8 +5,16 @@ INSTALL_DIR="${PURETEXT_WORKER_DIR:-/workspace/puretext-render-worker}"
 STATE_DIR="${PURETEXT_WORKER_STATE_DIR:-/workspace/.puretext-render-worker}"
 PID_FILE="$STATE_DIR/worker.pid"
 LOG_FILE="$STATE_DIR/worker.log"
+ENV_FILE="${PURETEXT_WORKER_ENV_FILE:-$STATE_DIR/worker.env}"
 
 mkdir -p "$STATE_DIR"
+
+if [ -f "$ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
 
 is_running() {
   [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
@@ -69,4 +77,3 @@ case "${1:-status}" in
     exit 2
     ;;
 esac
-
