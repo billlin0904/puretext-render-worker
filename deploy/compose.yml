@@ -17,6 +17,11 @@ services:
       RENDER_CACHE_ROOT: /var/lib/puretext-render-worker
     volumes:
       - ${RENDER_CACHE_HOST_PATH:-./data}:/var/lib/puretext-render-worker
+    read_only: true
+    tmpfs:
+      - /tmp:size=2g,mode=1777
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test: ["CMD", "node", "/app/healthcheck.mjs"]
       interval: 30s

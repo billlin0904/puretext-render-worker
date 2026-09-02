@@ -3,6 +3,8 @@
 deploy/.env
 data
 node_modules
+dist
+test
 *.log
 *.mp4
 *.part

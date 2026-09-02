@@ -40,7 +40,6 @@ POST /api/internal/render-jobs/:jobId/fail
     "sha256": "optional-input-hash"
   },
   "output": {
-    "uploadUrl": "short-lived-presigned-put-url",
     "objectKey": "video-renders/42/render-uuid.mp4"
   },
   "renderSpec": {},
@@ -52,6 +51,16 @@ POST /api/internal/render-jobs/:jobId/fail
   }
 }
 ```
+
+Worker 完成本機編碼後才呼叫以下端點取得新的短效上傳網址，避免長影片
+尚未轉完網址就已過期：
+
+```text
+POST /api/internal/render-jobs/:jobId/prepare-upload
+```
+
+請求包含輸出大小、SHA-256 與租約 Token，回應包含 Presigned PUT URL、
+Object Key 及上傳時必須附帶的標頭。
 
 ## 完成回報
 

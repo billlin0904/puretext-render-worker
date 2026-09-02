@@ -4,8 +4,18 @@ PureText 的獨立 GPU 影片輸出服務。Worker 由 GPU 主機主動透過 HT
 向 PureText API 領取任務、從私有物件儲存下載來源、使用 FFmpeg/NVENC
 燒錄字幕，最後直接上傳 MP4 並回報進度。
 
-> 目前狀態：架構與部署骨架。PureText 的 Worker API 與可執行映像完成前，
-> 請勿部署至正式環境。
+> 目前狀態：Worker 程式、NVENC 渲染器、測試與部署檔已建立；PureText
+> 主站的 Worker API 尚未接上，因此目前不可領取正式任務。
+
+## 已實作
+
+- HTTPS 長輪詢領取任務，1–8 個併發 slot。
+- 短效網址下載來源影片與按需字型快取。
+- 來源大小及 SHA-256 驗證與路徑穿越防護。
+- 沿用 PureText 的 ASS／動態字幕渲染器。
+- FFmpeg `h264_nvenc` 輸出及進度回報。
+- 完成後取得新的 Presigned PUT URL，直接上傳 S3。
+- 心跳、失敗回報、指數退避、暫存檔清理與健康檢查。
 
 ## 邊界
 
@@ -52,3 +62,12 @@ billlin0904/puretext-render-worker:stable
 - 任務使用租約、心跳、重試上限與冪等 Job ID。
 
 協定草案見 [`docs/PROTOCOL.md`](docs/PROTOCOL.md)。
+
+## 本機驗證
+
+```bash
+npm ci
+npm run typecheck
+npm test
+npm run build
+```
