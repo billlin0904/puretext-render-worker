@@ -467,7 +467,7 @@ function assFontMetricScale(fontFamily: string): { fontSize: number; horizontalP
   // background. KR needs a narrower one.
   const family = assFontFamily(fontFamily);
   if (/^Noto\s+(?:Sans|Serif)\s+JP$/i.test(family)) {
-    return { fontSize: 1.34, horizontalPercent: 97 };
+    return { fontSize: 1.34, horizontalPercent: process.platform === "linux" ? 97 : 108 };
   }
   if (/^Noto\s+(?:Sans|Serif)\s+KR$/i.test(family)) {
     return { fontSize: 1.34, horizontalPercent: 85 };
@@ -855,7 +855,8 @@ export async function writeSubtitleAssFile(
           const lineHeight = renderedStyle.fontSize * renderedStyle.lineHeight;
           for (const [lineIndex, lineRuns] of runLines.entries()) {
             const lineText = lineRuns.map((run) => run.text).join("");
-            const lineY = bounds.top + renderedStyle.backgroundPaddingY + lineHeight * (lineIndex + 0.5);
+            const lineY = (bounds.contentTop ?? bounds.top + renderedStyle.backgroundPaddingY)
+              + lineHeight * (lineIndex + 0.5);
             const horizontalPercent = assLineHorizontalPercent(
               measurementContext,
               spec.width,
@@ -895,7 +896,8 @@ export async function writeSubtitleAssFile(
         } else {
           const lineHeight = renderedStyle.fontSize * renderedStyle.lineHeight;
           for (const [lineIndex, line] of bounds.lines.entries()) {
-            const lineY = bounds.top + renderedStyle.backgroundPaddingY + lineHeight * (lineIndex + 0.5);
+            const lineY = (bounds.contentTop ?? bounds.top + renderedStyle.backgroundPaddingY)
+              + lineHeight * (lineIndex + 0.5);
             pendingDialogue.push([
               `Dialogue: ${layerBase + 2}`,
               ...eventPrefix,

@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createCanvas } from "@napi-rs/canvas";
+import { wrapSubtitleText } from "../src/renderer/subtitleCanvas.js";
 import {
   chooseVideoEncoder,
   parseVideoRenderOptions,
@@ -33,4 +35,23 @@ test("normalizes render options and validates subtitle cues", () => {
     cues: [{ id: 1, start: 0, end: 2, text: "測試字幕", style: {} }],
   });
   assert.equal(spec?.cues[0]?.text, "測試字幕");
+});
+
+test("width-constrains explicit lines and preserves grapheme clusters", () => {
+  const context = createCanvas(1280, 720).getContext("2d");
+  context.font = '700 48px "Noto Sans TC"';
+  const sentence = "Some instability in the US bond market Well, let me, let me say a couple things.";
+  const lines = wrapSubtitleText(context, sentence, 420, 0, true);
+  assert.ok(lines.length > 1);
+  assert.ok(lines.every((line) => context.measureText(line).width <= 420.5));
+
+  const family = "👨‍👩‍👧‍👦";
+  const emojiLines = wrapSubtitleText(
+    context,
+    `${family}${family}${family}`,
+    context.measureText(family).width * 1.1,
+    0,
+    true,
+  );
+  assert.deepEqual(emojiLines, [family, family, family]);
 });

@@ -19,7 +19,7 @@ export type SubtitleCanvasStyle = {
   positionX: number;
   positionY: number;
   maxWidth: number;
-  /** Preserve explicit line breaks and skip the renderer's automatic wrapping. */
+  /** Preserve explicit line breaks. Explicit lines are still width constrained. */
   prewrapped?: boolean;
 };
 
@@ -324,11 +324,16 @@ export type SubtitleCanvasBounds = {
   width: number;
   height: number;
   lines: string[];
+  /** Top edge of the line box after background/effect insets. */
+  contentTop?: number;
 };
 
 type CanvasContext = SKRSContext2D;
 
 type PositionedRun = SubtitleCanvasRun & { width: number };
+
+const MAX_DYNAMIC_RUN_SCALE = 1.22;
+const MAX_DYNAMIC_RUN_LIFT = 7;
 
 function rgba(hex: string, opacity: number): string {
   const value = hex.replace("#", "");
@@ -354,8 +359,24 @@ function fontValue(style: SubtitleCanvasStyle): string {
   return `${style.italic ? "italic " : ""}${style.fontWeight} ${style.fontSize}px ${family}`;
 }
 
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function graphemes(text: string): string[] {
+  return Array.from(graphemeSegmenter.segment(text), ({ segment }) => segment);
+}
+
 function textWidth(ctx: CanvasContext, text: string, letterSpacing: number): number {
-  return ctx.measureText(text).width + Math.max(0, text.length - 1) * letterSpacing;
+  return ctx.measureText(text).width + Math.max(0, graphemes(text).length - 1) * letterSpacing;
+}
+
+function textInkOverhang(ctx: CanvasContext, text: string, advanceWidth: number): number {
+  const previousAlign = ctx.textAlign;
+  ctx.textAlign = "left";
+  const metrics = ctx.measureText(text);
+  ctx.textAlign = previousAlign;
+  const left = Math.max(0, -(metrics.actualBoundingBoxLeft ?? 0));
+  const right = Math.max(0, (metrics.actualBoundingBoxRight ?? advanceWidth) - advanceWidth);
+  return Math.max(left, right);
 }
 
 /** Measure one already-wrapped subtitle line with the exact Canvas font rules. */
@@ -376,6 +397,53 @@ function tokensFor(line: string): string[] {
   return line.match(/[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]|\s+|[^\s\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]+/gu) ?? [line];
 }
 
+function splitOversizedToken(
+  ctx: CanvasContext,
+  token: string,
+  maxTextWidth: number,
+  letterSpacing: number,
+): string[] {
+  if (textWidth(ctx, token, letterSpacing) <= maxTextWidth) return [token];
+  const chunks: string[] = [];
+  let chunk = "";
+  for (const grapheme of graphemes(token)) {
+    const candidate = chunk + grapheme;
+    if (chunk && textWidth(ctx, candidate, letterSpacing) > maxTextWidth) {
+      chunks.push(chunk);
+      chunk = grapheme;
+    } else {
+      chunk = candidate;
+    }
+  }
+  if (chunk) chunks.push(chunk);
+  return chunks.length ? chunks : [token];
+}
+
+function wrapSubtitleParagraph(
+  ctx: CanvasContext,
+  paragraph: string,
+  maxTextWidth: number,
+  letterSpacing: number,
+): string[] {
+  if (!paragraph) return [""];
+  const output: string[] = [];
+  let line = "";
+  for (const originalToken of tokensFor(paragraph)) {
+    const tokenParts = splitOversizedToken(ctx, originalToken, maxTextWidth, letterSpacing);
+    for (const tokenPart of tokenParts) {
+      const candidate = line + tokenPart;
+      if (line && textWidth(ctx, candidate, letterSpacing) > maxTextWidth) {
+        output.push(line.trimEnd());
+        line = tokenPart.trimStart();
+      } else {
+        line = candidate;
+      }
+    }
+  }
+  output.push(line.trimEnd());
+  return output;
+}
+
 export function wrapSubtitleText(
   ctx: CanvasContext,
   text: string,
@@ -383,28 +451,13 @@ export function wrapSubtitleText(
   letterSpacing: number,
   prewrapped = false,
 ): string[] {
-  if (prewrapped) {
-    const lines = text.replace(/\r/g, "").split("\n");
-    return lines.length ? lines : [""];
-  }
-  const output: string[] = [];
-  for (const paragraph of text.replace(/\r/g, "").split("\n")) {
-    if (!paragraph) {
-      output.push("");
-      continue;
-    }
-    let line = "";
-    for (const token of tokensFor(paragraph)) {
-      const candidate = line + token;
-      if (line && textWidth(ctx, candidate, letterSpacing) > maxTextWidth) {
-        output.push(line.trimEnd());
-        line = token.trimStart();
-      } else {
-        line = candidate;
-      }
-    }
-    output.push(line.trimEnd());
-  }
+  // `prewrapped` preserves each explicit newline as a hard boundary, but it
+  // never permits an explicit line to escape the caption box. Both modes use
+  // the same width-constrained paragraph wrapper.
+  void prewrapped;
+  const output = text.replace(/\r/g, "").split("\n").flatMap((paragraph) => (
+    wrapSubtitleParagraph(ctx, paragraph, maxTextWidth, letterSpacing)
+  ));
   return output.length ? output : [""];
 }
 
@@ -431,7 +484,7 @@ function drawSpacedText(ctx: CanvasContext, text: string, centerX: number, y: nu
   }
   const width = textWidth(ctx, text, spacing);
   let x = centerX - width / 2;
-  for (const character of text) {
+  for (const character of graphemes(text)) {
     const characterWidth = ctx.measureText(character).width;
     const characterCenter = x + characterWidth / 2;
     if (stroke) ctx.strokeText(character, characterCenter, y);
@@ -465,19 +518,22 @@ function layoutCanvasRuns(
       lineWidth = 0;
       continue;
     }
-    let text = run.text;
-    if (!lines.at(-1)?.length) text = text.trimStart();
-    if (!text) continue;
-    let width = textWidth(ctx, text, letterSpacing);
-    if (!prewrapped && lineWidth > 0 && lineWidth + width > maxWidth) {
-      lines.push([]);
-      lineWidth = 0;
-      text = text.trimStart();
+    void prewrapped;
+    const parts = splitOversizedToken(ctx, run.text, maxWidth, letterSpacing);
+    for (let text of parts) {
+      if (!lines.at(-1)?.length) text = text.trimStart();
       if (!text) continue;
-      width = textWidth(ctx, text, letterSpacing);
+      let width = textWidth(ctx, text, letterSpacing);
+      if (lineWidth > 0 && lineWidth + width > maxWidth) {
+        lines.push([]);
+        lineWidth = 0;
+        text = text.trimStart();
+        if (!text) continue;
+        width = textWidth(ctx, text, letterSpacing);
+      }
+      lines[lines.length - 1]!.push({ ...run, text, width });
+      lineWidth += width;
     }
-    lines[lines.length - 1]!.push({ ...run, text, width });
-    lineWidth += width;
   }
   return lines.length ? lines : [[]];
 }
@@ -553,8 +609,25 @@ function renderSubtitleRuns(
   const lineWidths = lines.map((line) => line.reduce((sum, run) => sum + run.width, 0));
   const lineHeight = style.fontSize * style.lineHeight;
   const measuredWidth = Math.max(...lineWidths, 0);
-  const width = Math.min(maximumWidth, measuredWidth + style.backgroundPaddingX * 2);
-  const height = lines.length * lineHeight + style.backgroundPaddingY * 2;
+  const hasDynamicScale = lines.some((line) => line.some((run) => run.scale != null));
+  const inkOverhang = Math.max(0, ...lines.flatMap((line) => line.map((run) => (
+    textInkOverhang(ctx, run.text, run.width) * (hasDynamicScale ? MAX_DYNAMIC_RUN_SCALE : 1)
+  ))));
+  // Dynamic presets scale only the active run. Reserve the largest run's
+  // peak expansion instead of scaling the whole line, so the box remains
+  // compact while the animated glyph can never escape it.
+  const dynamicScaleExtra = hasDynamicScale
+    ? Math.max(0, ...lines.flatMap((line) => line.map((run) => run.width))) * (MAX_DYNAMIC_RUN_SCALE - 1)
+    : 0;
+  const horizontalEffects = Math.max(0, style.outline) + inkOverhang;
+  const width = Math.min(
+    canvasWidth,
+    measuredWidth + dynamicScaleExtra + (style.backgroundPaddingX + horizontalEffects) * 2,
+  );
+  const dynamicLift = lines.some((line) => line.some((run) => run.offsetY != null)) ? MAX_DYNAMIC_RUN_LIFT : 0;
+  const verticalEffects = Math.max(0, style.outline) + dynamicLift;
+  const height = lines.length * lineHeight
+    + (style.backgroundPaddingY + verticalEffects) * 2;
   const left = style.positionX - width / 2;
   const top = style.positionY - height / 2;
 
@@ -566,7 +639,7 @@ function renderSubtitleRuns(
   }
 
   lines.forEach((line, lineIndex) => {
-    const y = top + style.backgroundPaddingY + lineHeight * (lineIndex + 0.5);
+    const y = top + style.backgroundPaddingY + verticalEffects + lineHeight * (lineIndex + 0.5);
     let x = style.positionX - lineWidths[lineIndex]! / 2;
     for (const run of line) {
       const centerX = x + run.width / 2;
@@ -617,6 +690,7 @@ function renderSubtitleRuns(
     width,
     height,
     lines: lines.map((line) => line.map((run) => run.text).join("")),
+    contentTop: top + style.backgroundPaddingY + verticalEffects,
   };
 }
 
@@ -652,8 +726,13 @@ export function renderSubtitleCanvas(
   );
   const lineHeight = style.fontSize * style.lineHeight;
   const measuredWidth = Math.max(...lines.map((line) => textWidth(ctx, line, style.letterSpacing)), 0);
-  const width = Math.min(maximumWidth, measuredWidth + style.backgroundPaddingX * 2);
-  const height = lines.length * lineHeight + style.backgroundPaddingY * 2;
+  const inkOverhang = Math.max(0, ...lines.map((line) => (
+    textInkOverhang(ctx, line, textWidth(ctx, line, style.letterSpacing))
+  )));
+  const horizontalEffects = Math.max(0, style.outline) + inkOverhang;
+  const width = Math.min(canvasWidth, measuredWidth + (style.backgroundPaddingX + horizontalEffects) * 2);
+  const verticalEffects = Math.max(0, style.outline);
+  const height = lines.length * lineHeight + (style.backgroundPaddingY + verticalEffects) * 2;
   const left = style.positionX - width / 2;
   const top = style.positionY - height / 2;
 
@@ -674,7 +753,7 @@ export function renderSubtitleCanvas(
   ctx.lineWidth = style.outline * 2;
 
   lines.forEach((line, index) => {
-    const y = top + style.backgroundPaddingY + lineHeight * (index + 0.5);
+    const y = top + style.backgroundPaddingY + verticalEffects + lineHeight * (index + 0.5);
     if (style.outline > 0) drawSpacedText(ctx, line, style.positionX, y, style.letterSpacing, true);
     drawSpacedText(ctx, line, style.positionX, y, style.letterSpacing, false);
     if (style.underline) {
@@ -684,7 +763,16 @@ export function renderSubtitleCanvas(
   });
   ctx.restore();
 
-  return { left, top, right: left + width, bottom: top + height, width, height, lines };
+  return {
+    left,
+    top,
+    right: left + width,
+    bottom: top + height,
+    width,
+    height,
+    lines,
+    contentTop: top + style.backgroundPaddingY + verticalEffects,
+  };
 }
 
 import type { SKRSContext2D } from "@napi-rs/canvas";

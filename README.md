@@ -1,5 +1,7 @@
 # PureText Render Worker
 
+Current release: `v0.1.5` (`billlin0904/puretext:render-worker-0.1.5`).
+
 PureText 的獨立 GPU 影片輸出服務。Worker 由 GPU 主機主動透過 HTTPS
 向 PureText API 領取任務、從私有物件儲存下載來源、使用 FFmpeg/NVENC
 燒錄字幕，最後直接上傳 MP4 並回報進度。
@@ -47,7 +49,7 @@ docker compose up -d --remove-orphans
 目前映像：
 
 ```text
-billlin0904/puretext:render-worker-0.1.2
+billlin0904/puretext:render-worker-0.1.5
 billlin0904/puretext:render-worker-latest
 ```
 
