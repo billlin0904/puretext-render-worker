@@ -53,6 +53,24 @@ billlin0904/puretext:render-worker-latest
 
 正式環境應固定版本或 digest，避免 `render-worker-latest` 自動換版。
 
+## GPU.TW 不使用自訂 Docker 映像
+
+若 GPU.TW 節點無法拉取自訂映像，可部署平台內建的 Ubuntu 22.04 + CUDA 12
+環境並啟用 SSH。Worker 設定仍放在 GPU.TW 的環境變數，接著執行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/billlin0904/puretext-render-worker/main/scripts/bootstrap-gputw.sh | bash
+/workspace/puretext-render-worker/scripts/gputw-worker.sh start
+```
+
+管理指令：
+
+```bash
+/workspace/puretext-render-worker/scripts/gputw-worker.sh status
+/workspace/puretext-render-worker/scripts/gputw-worker.sh logs
+/workspace/puretext-render-worker/scripts/gputw-worker.sh restart
+```
+
 ## 安全原則
 
 - `.env`、Worker Token、AWS 金鑰不得提交。
