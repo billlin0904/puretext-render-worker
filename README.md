@@ -44,14 +44,14 @@ docker compose pull
 docker compose up -d --remove-orphans
 ```
 
-預定映像：
+目前映像：
 
 ```text
-billlin0904/puretext-render-worker:v0.1.0
-billlin0904/puretext-render-worker:stable
+billlin0904/puretext:render-worker-0.1.0
+billlin0904/puretext:render-worker-latest
 ```
 
-正式環境發布後應固定版本或 digest，避免未審核的 `stable` 自動換版。
+正式環境應固定版本或 digest，避免 `render-worker-latest` 自動換版。
 
 ## 安全原則
 
