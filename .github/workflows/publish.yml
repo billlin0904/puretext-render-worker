@@ -26,6 +26,8 @@ jobs:
         with:
           context: .
           platforms: linux/amd64
+          provenance: false
+          sbom: false
           push: true
           tags: |
             billlin0904/puretext:render-worker-latest
