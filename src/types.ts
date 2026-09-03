@@ -17,7 +17,8 @@ export type ClaimedRenderJob = {
   leaseExpiresAt: string;
   kind: "subtitle";
   input: RemoteFile;
-  fonts?: RemoteFont[];
+  fontBundle: { version: string; metricsSha256: string };
+  fonts: RemoteFont[];
   output: {
     objectKey: string;
   };
@@ -81,7 +82,16 @@ export function parseClaimedRenderJob(value: unknown): ClaimedRenderJob {
     throw new Error("Invalid output object key");
   }
   if (!input.renderSpec || !input.renderOptions) throw new Error("Missing render specification");
-  if (input.fonts && (!Array.isArray(input.fonts) || input.fonts.length > 64)) throw new Error("Invalid fonts");
-  for (const font of input.fonts ?? []) remoteHttpsUrl(font.downloadUrl, "font.downloadUrl");
+  if (!input.fontBundle || typeof input.fontBundle.version !== "string"
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(input.fontBundle.version)
+    || typeof input.fontBundle.metricsSha256 !== "string"
+    || !/^[a-f0-9]{64}$/i.test(input.fontBundle.metricsSha256)) throw new Error("Invalid font bundle");
+  if (!Array.isArray(input.fonts) || input.fonts.length < 1 || input.fonts.length > 160) throw new Error("Invalid fonts");
+  for (const font of input.fonts) {
+    remoteHttpsUrl(font.downloadUrl, "font.downloadUrl");
+    if (!/^[a-f0-9]{64}$/i.test(font.sha256 ?? "") || !Number.isSafeInteger(font.size) || Number(font.size) <= 0) {
+      throw new Error("Invalid font integrity declaration");
+    }
+  }
   return input as ClaimedRenderJob;
 }

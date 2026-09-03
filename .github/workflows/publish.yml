@@ -33,16 +33,15 @@ jobs:
           sbom: false
           push: true
           build-args: |
-            SERVICE_VERSION=0.1.11
-            PURETEXT_FONT_IMAGE=billlin0904/puretext:api-v0.5.13
+            SERVICE_VERSION=0.1.12
             SERVICE_COMMIT=${{ github.sha }}
             SERVICE_BUILT_AT=${{ env.BUILD_TIMESTAMP }}
           tags: |
             billlin0904/puretext:render-worker-latest
-            billlin0904/puretext:render-worker-0.1.11
+            billlin0904/puretext:render-worker-0.1.12
             billlin0904/puretext:render-worker-${{ github.sha }}
             billlin0904/puretext-render-worker:latest
-            billlin0904/puretext-render-worker:0.1.11
+            billlin0904/puretext-render-worker:0.1.12
             billlin0904/puretext-render-worker:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -50,4 +49,4 @@ jobs:
       - name: Verify public image pull
         run: |
           docker logout
-          docker pull billlin0904/puretext-render-worker:0.1.11
+          docker pull billlin0904/puretext-render-worker:0.1.12

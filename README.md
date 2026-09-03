@@ -2,19 +2,12 @@
 
 ## 字幕字型一致性
 
-Worker 映像會從 `PURETEXT_FONT_IMAGE`（預設為 PureText API 的固定版本）複製
-完整的 render 字型目錄，並在 Docker build 中重新解析每個 TTF/OTF 的 OpenType
-metrics 與 cmap。Canvas 和 libass 因此使用同一批實際字型檔；正式環境啟用
-`PURETEXT_STRICT_SUBTITLE_FONTS=true`，缺字或缺檔會讓工作明確失敗，不會靜默
-切換成系統字型。
+Worker 映像不再包含 TTF/OTF。API 會從不可變的 S3 字型包簽發短效下載網址，
+Worker 僅下載該任務需要的字型到持久 cache。每個檔案以 SHA-256 驗證，字型包
+的 metrics 指紋也必須與 Worker 內建的 metrics 完全相同；不一致時會拒絕輸出，
+不會讓 libass 靜默切換系統字型。
 
-更新 PureText 字型版本時，請用 build arg 指定同一版 API 映像：
-
-```bash
-docker build --build-arg PURETEXT_FONT_IMAGE=billlin0904/puretext:api-vX.Y.Z .
-```
-
-Current release: `v0.1.11` (`billlin0904/puretext:render-worker-0.1.11`).
+Current release: `v0.1.12` (`billlin0904/puretext:render-worker-0.1.12`).
 
 PureText 的獨立 GPU 影片輸出服務。Worker 由 GPU 主機主動透過 HTTPS
 向 PureText API 領取任務、從私有物件儲存下載來源、使用 FFmpeg/NVENC
@@ -63,7 +56,7 @@ docker compose up -d --remove-orphans
 目前映像：
 
 ```text
-billlin0904/puretext:render-worker-0.1.11
+billlin0904/puretext:render-worker-0.1.12
 billlin0904/puretext:render-worker-latest
 ```
 

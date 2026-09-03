@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { ApiClient } from "./apiClient.js";
@@ -8,6 +9,11 @@ import { collectGpuTelemetry } from "./gpuTelemetry.js";
 import { logger } from "./logger.js";
 import { parseVideoRenderOptions, parseVideoRenderSpec, renderSubtitleVideo } from "./renderer/subtitleVideoRenderer.js";
 import type { ClaimedRenderJob, GpuTelemetry, WorkerStatus } from "./types.js";
+import { GENERATED_SUBTITLE_FONT_METRICS } from "./renderer/subtitle-font-metrics.generated.js";
+
+const COMPILED_FONT_METRICS_SHA256 = crypto.createHash("sha256")
+  .update(`${JSON.stringify(GENERATED_SUBTITLE_FONT_METRICS, null, 2)}\n`)
+  .digest("hex");
 
 export class RenderWorker {
   private readonly api: ApiClient;
@@ -100,8 +106,11 @@ export class RenderWorker {
       logger.info({ jobId: job.jobId, slot }, "render job started");
       const spec = parseVideoRenderSpec(job.renderSpec);
       if (!spec) throw new Error("Invalid subtitle render specification");
-      const fontsRoot = path.join(this.config.cacheRoot, "fonts");
-      await ensureFonts(job.fonts ?? [], fontsRoot, this.config.maxInputBytes);
+      if (job.fontBundle.metricsSha256.toLowerCase() !== COMPILED_FONT_METRICS_SHA256) {
+        throw new Error(`Font metrics mismatch for bundle ${job.fontBundle.version}`);
+      }
+      const fontsRoot = path.join(this.config.cacheRoot, "fonts", job.fontBundle.version, "render");
+      await ensureFonts(job.fonts, fontsRoot, this.config.maxInputBytes);
       process.env["PURETEXT_SUBTITLE_FONTS_DIR"] = fontsRoot;
       report("download", 3, true);
       const inputPath = path.join(renderDir, "input-video");
