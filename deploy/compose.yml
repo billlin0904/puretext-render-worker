@@ -2,7 +2,7 @@ name: puretext-render-worker
 
 services:
   render-worker:
-    image: ${RENDER_WORKER_IMAGE:-billlin0904/puretext:render-worker-0.1.5}
+    image: ${RENDER_WORKER_IMAGE:-billlin0904/puretext:render-worker-0.1.6}
     restart: unless-stopped
     gpus: all
     env_file:

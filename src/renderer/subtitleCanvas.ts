@@ -158,6 +158,11 @@ function easeOutCubic(value: number): number {
   return 1 - (1 - progress) ** 3;
 }
 
+// U+2502 can fall back to a CJK font in libass and use different side
+// bearings than Canvas measured for it.
+const TYPEWRITER_CURSOR = "|";
+const TYPEWRITER_CURSOR_SAFETY_EM = 0.7;
+
 /** Match the landing-page pop: 0.72 -> 1.22 -> 1 over 320 ms. */
 function popScale(elapsed: number): number {
   const progress = clampProgress(elapsed / 0.32);
@@ -215,15 +220,24 @@ export function dynamicSubtitleFrame(
   if (preset === "typewriter") {
     const visible = wordRuns.filter((word) => word.start <= time);
     const cursorOpacity = 0.45 + 0.55 * ((Math.sin(time * Math.PI * 4) + 1) / 2);
+    const typewriterStyle = {
+      ...style,
+      // Reserve the cursor plus Canvas/libass advance differences and make a
+      // long line wrap before it can touch the background edge.
+      backgroundPaddingX: Math.max(
+        style.backgroundPaddingX,
+        style.fontSize * TYPEWRITER_CURSOR_SAFETY_EM,
+      ),
+    };
     return {
-      text: `${joinTimestampedWordRuns(visible)}│`,
-      style,
+      text: `${joinTimestampedWordRuns(visible)}${TYPEWRITER_CURSOR}`,
+      style: typewriterStyle,
       runs: [
         ...visible.map((word) => ({
           text: word.display,
           opacity: clampProgress((time - word.start) / 0.1),
         })),
-        { text: "│", opacity: cursorOpacity },
+        { text: TYPEWRITER_CURSOR, opacity: cursorOpacity },
       ],
     };
   }
