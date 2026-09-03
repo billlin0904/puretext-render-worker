@@ -2,7 +2,12 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { GENERATED_SUBTITLE_FONT_FILES } from "./subtitle-font-catalog.generated.js";
+import {
+  GENERATED_SUBTITLE_FONT_METRICS,
+  type GeneratedSubtitleFontMetric,
+} from "./subtitle-font-metrics.generated.js";
 import { createCanvas, GlobalFonts } from "@napi-rs/canvas";
+import * as fontkit from "fontkit";
 import {
   dynamicSubtitleFrame,
   dynamicSubtitleTimelinePoints,
@@ -202,13 +207,21 @@ function throwIfRenderAborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw renderAbortError();
 }
 
-function runFfmpeg(args: string[], onProgress?: (seconds: number) => void, signal?: AbortSignal): Promise<void> {
+function runFfmpeg(
+  args: string[],
+  onProgress?: (seconds: number) => void,
+  signal?: AbortSignal,
+  environment?: NodeJS.ProcessEnv,
+): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     if (signal?.aborted) {
       reject(renderAbortError());
       return;
     }
-    const child = spawn("ffmpeg", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("ffmpeg", args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: environment ?? process.env,
+    });
     let stderr = "";
     let progressBuffer = "";
     let settled = false;
@@ -301,6 +314,127 @@ const BUNDLED_SUBTITLE_FONTS = GENERATED_SUBTITLE_FONT_FILES;
 const BUNDLED_SUBTITLE_FONT_INSTANCES: Record<string, string[]> = {
   "Chiron GoRound TC": ["chiron-goround-tc-700.ttf"],
 };
+const SUBTITLE_FONT_BY_FAMILY = new Map(
+  BUNDLED_SUBTITLE_FONTS.map((font) => [font.family.toLocaleLowerCase(), font]),
+);
+const SUBTITLE_FONT_METRIC_BY_FILE = new Map(
+  GENERATED_SUBTITLE_FONT_METRICS.map((metric) => [metric.file, metric]),
+);
+const SUBTITLE_FONT_METRIC_BY_ALIAS = new Map(
+  GENERATED_SUBTITLE_FONT_METRICS.map((metric) => [`PureTextFont_${metric.file.replace(/[^a-z0-9]/gi, "_")}`, metric]),
+);
+const decodedCoverage = new Map<string, Array<readonly [number, number]>>();
+const openedFontFaces = new Map<string, fontkit.FontkitFont>();
+
+function strictSubtitleFonts(): boolean {
+  const configured = process.env["PURETEXT_STRICT_SUBTITLE_FONTS"]?.trim().toLowerCase();
+  if (configured) return !["0", "false", "off", "no"].includes(configured);
+  return process.env["NODE_ENV"] === "production";
+}
+
+function subtitleFontRecord(fontFamily: string, fontWeight = 400): GeneratedSubtitleFontMetric {
+  const rawFamily = (fontFamily.split(",")[0] ?? fontFamily).trim().replace(/^['"]|['"]$/g, "");
+  const aliasedMetric = SUBTITLE_FONT_METRIC_BY_ALIAS.get(rawFamily);
+  if (aliasedMetric) return aliasedMetric;
+  const requested = assFontFamily(rawFamily);
+  const catalogFont = SUBTITLE_FONT_BY_FAMILY.get(requested.toLocaleLowerCase())
+    ?? SUBTITLE_FONT_BY_FAMILY.get("noto sans tc");
+  if (!catalogFont) throw new Error("bundled Noto Sans TC subtitle font is missing from the generated catalog");
+  const instance = fontWeight >= 600 ? BUNDLED_SUBTITLE_FONT_INSTANCES[catalogFont.family]?.at(-1) : undefined;
+  const metric = SUBTITLE_FONT_METRIC_BY_FILE.get(instance ?? catalogFont.file);
+  if (!metric) throw new Error(`subtitle font metrics are missing for ${instance ?? catalogFont.file}`);
+  return metric;
+}
+
+function subtitleCanvasFontAlias(metric: GeneratedSubtitleFontMetric): string {
+  return `PureTextFont_${metric.file.replace(/[^a-z0-9]/gi, "_")}`;
+}
+
+function decodeCoverage(metric: GeneratedSubtitleFontMetric): Array<readonly [number, number]> {
+  const cached = decodedCoverage.get(metric.file);
+  if (cached) return cached;
+  const bytes = Buffer.from(metric.coverageBase64, "base64");
+  const values: number[] = [];
+  for (let offset = 0; offset < bytes.length;) {
+    let value = 0;
+    let shift = 0;
+    while (offset < bytes.length) {
+      const byte = bytes[offset++]!;
+      value |= (byte & 0x7f) << shift;
+      if ((byte & 0x80) === 0) break;
+      shift += 7;
+    }
+    values.push(value >>> 0);
+  }
+  const ranges: Array<readonly [number, number]> = [];
+  let previousEnd = -1;
+  for (let index = 0; index + 1 < values.length; index += 2) {
+    const start = previousEnd + 1 + values[index]!;
+    const end = start + values[index + 1]!;
+    ranges.push([start, end]);
+    previousEnd = end;
+  }
+  decodedCoverage.set(metric.file, ranges);
+  return ranges;
+}
+
+function fontContainsCodePoint(ranges: Array<readonly [number, number]>, codePoint: number): boolean {
+  let low = 0;
+  let high = ranges.length - 1;
+  while (low <= high) {
+    const middle = (low + high) >>> 1;
+    const [start, end] = ranges[middle]!;
+    if (codePoint < start) high = middle - 1;
+    else if (codePoint > end) low = middle + 1;
+    else return true;
+  }
+  return false;
+}
+
+function assertFontSupportsText(metric: GeneratedSubtitleFontMetric, text: string): void {
+  if (!strictSubtitleFonts()) return;
+  const ranges = decodeCoverage(metric);
+  const missing = [...new Set([...text].flatMap((character) => {
+    if (/^[\p{White_Space}\p{Default_Ignorable_Code_Point}]$/u.test(character)) return [];
+    const codePoint = character.codePointAt(0)!;
+    return fontContainsCodePoint(ranges, codePoint) ? [] : [codePoint];
+  }))];
+  if (!missing.length) return;
+  const labels = missing.slice(0, 8).map((codePoint) => `U+${codePoint.toString(16).toUpperCase().padStart(4, "0")}`);
+  throw new Error(
+    `subtitle font ${metric.family} (${metric.file}) lacks ${labels.join(", ")}; libass fallback is disabled`,
+  );
+}
+
+function openFontFace(metric: GeneratedSubtitleFontMetric, fontWeight: number): fontkit.FontkitFont | undefined {
+  const fontsDir = subtitleFontsDirectory();
+  if (!fontsDir) return undefined;
+  const weight = Math.max(100, Math.min(900, Math.round(fontWeight)));
+  const cacheKey = `${metric.file}:${weight}`;
+  const cached = openedFontFaces.get(cacheKey);
+  if (cached) return cached;
+  try {
+    const base = fontkit.openSync(path.join(fontsDir, metric.file));
+    const axis = base.variationAxes?.["wght"];
+    const face = axis
+      ? base.getVariation({ wght: Math.max(axis.min, Math.min(axis.max, weight)) })
+      : base;
+    openedFontFaces.set(cacheKey, face);
+    return face;
+  } catch (error) {
+    if (strictSubtitleFonts()) throw new Error(`failed to shape exact subtitle font ${metric.file}`, { cause: error });
+    return undefined;
+  }
+}
+
+function measureOpenTypeTextWidth(text: string, style: SubtitleCanvasStyle): number {
+  const metric = subtitleFontRecord(style.fontFamily, style.fontWeight);
+  const face = openFontFace(metric, style.fontWeight);
+  if (!face || !text) return 0;
+  const advance = face.layout(text).advanceWidth / face.unitsPerEm * style.fontSize;
+  const spacing = Math.max(0, [...text].length - 1) * style.letterSpacing;
+  return advance + spacing;
+}
 
 function subtitleFontsDirectory(): string | undefined {
   const configured = process.env["PURETEXT_SUBTITLE_FONTS_DIR"]?.trim();
@@ -317,28 +451,24 @@ export function initializeSubtitleFonts(requestedFamilies: string[]) {
   const fontsDir = subtitleFontsDirectory();
   if (!fontsInitialized) {
     fontsInitialized = true;
-    (GlobalFonts as typeof GlobalFonts & { loadSystemFonts: () => number }).loadSystemFonts();
-    for (const fontPath of [
-      "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-      "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-      "C:/Windows/Fonts/msjh.ttc",
-      "C:/Windows/Fonts/msjhbd.ttc",
-    ]) {
-      if (fs.existsSync(fontPath)) GlobalFonts.registerFromPath(fontPath, "Noto Sans TC");
+    if (!strictSubtitleFonts()) {
+      (GlobalFonts as typeof GlobalFonts & { loadSystemFonts: () => number }).loadSystemFonts();
     }
   }
   if (fontsDir) {
     const requested = new Set(requestedFamilies);
     for (const font of BUNDLED_SUBTITLE_FONTS.filter((item) => requested.has(item.family))) {
-      if (registeredBundledFonts.has(font.family)) continue;
-      const fontPath = path.join(fontsDir, font.file);
-      if (fs.existsSync(fontPath)) {
-        GlobalFonts.registerFromPath(fontPath, font.family);
-        for (const instanceFile of BUNDLED_SUBTITLE_FONT_INSTANCES[font.family] ?? []) {
-          const instancePath = path.join(fontsDir, instanceFile);
-          if (fs.existsSync(instancePath)) GlobalFonts.registerFromPath(instancePath, font.family);
+      for (const file of [font.file, ...(BUNDLED_SUBTITLE_FONT_INSTANCES[font.family] ?? [])]) {
+        if (registeredBundledFonts.has(file)) continue;
+        const fontPath = path.join(fontsDir, file);
+        if (!fs.existsSync(fontPath)) {
+          if (strictSubtitleFonts()) throw new Error(`required subtitle font file is missing: ${fontPath}`);
+          continue;
         }
-        registeredBundledFonts.add(font.family);
+        if (!GlobalFonts.registerFromPath(fontPath, font.family) && strictSubtitleFonts()) {
+          throw new Error(`failed to register exact subtitle font file: ${fontPath}`);
+        }
+        registeredBundledFonts.add(file);
       }
     }
     logger.info({ fontsDir, fontFamilies: [...requested] }, "[subtitleVideoRenderer] requested subtitle fonts loaded");
@@ -396,7 +526,13 @@ function assAlpha(opacity: number): string {
 }
 
 function assFontFamily(value: string): string {
-  return (value.split(",")[0] ?? "Noto Sans TC").trim().replace(/^['"]|['"]$/g, "") || "Noto Sans TC";
+  const family = (value.split(",")[0] ?? "Noto Sans TC").trim().replace(/^['"]|['"]$/g, "") || "Noto Sans TC";
+  const exactMetric = SUBTITLE_FONT_METRIC_BY_ALIAS.get(family);
+  return exactMetric?.family ?? family;
+}
+
+function escapeXml(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 export function subtitleFontFamilyForText(
@@ -404,7 +540,8 @@ export function subtitleFontFamilyForText(
   text: string,
   track?: "source" | "translated",
 ): string {
-  const family = assFontFamily(fontFamily);
+  const requested = assFontFamily(fontFamily);
+  const family = SUBTITLE_FONT_BY_FAMILY.get(requested.toLocaleLowerCase())?.family ?? "Noto Sans TC";
   // Translated text may intentionally retain Japanese/Korean names. The old
   // character-count heuristic could switch only that cue from TC to JP/KR,
   // changing libass metrics midway through a video and pushing glyphs outside
@@ -456,29 +593,57 @@ function blendHexColor(base: string, highlight: string, progress: number): strin
   return `#${channel(1)}${channel(2)}${channel(3)}`.toUpperCase();
 }
 
-function assFontMetricScale(fontFamily: string): { fontSize: number; horizontalPercent: number } {
-  // Noto CJK faces expose different em/advance metrics in libass and Skia.
-  // These values are measured from the same bundled fonts in the production
-  // Debian/libass container. All Noto CJK variants need the lower em scale;
-  // leaving TC on the generic 1.5 scale makes a 34px real-world cue 999px wide
-  // while its Canvas-measured background is only 936px. JP uses the same
-  // horizontal advance as Canvas after a small Linux/libass correction; the
-  // former 108% expansion made long source captions escape their content-sized
-  // background. KR needs a narrower one.
-  const family = assFontFamily(fontFamily);
-  if (/^Noto\s+(?:Sans|Serif)\s+JP$/i.test(family)) {
-    return { fontSize: 1.34, horizontalPercent: process.platform === "linux" ? 97 : 108 };
+export function assFontMetricScale(fontFamily: string, fontWeight = 400): number {
+  return subtitleFontRecord(fontFamily, fontWeight).assFontSizeScale;
+}
+
+async function prepareExactSubtitleFonts(spec: VideoRenderSpec, outputPath: string): Promise<string | undefined> {
+  const fontsDir = subtitleFontsDirectory();
+  if (!fontsDir) {
+    if (strictSubtitleFonts()) throw new Error("bundled subtitle fonts directory was not found; fallback is disabled");
+    return undefined;
   }
-  if (/^Noto\s+(?:Sans|Serif)\s+KR$/i.test(family)) {
-    return { fontSize: 1.34, horizontalPercent: 85 };
+  const requested = spec.cues.map((cue) => {
+    const family = subtitleFontFamilyForText(cue.style.fontFamily, cue.text, cue.track);
+    const metric = subtitleFontRecord(family, cue.style.fontWeight);
+    assertFontSupportsText(metric, cue.dynamic?.preset === "typewriter" ? `${cue.text}|` : cue.text);
+    return { family, metric };
+  });
+  for (const { metric } of new Map(requested.map((item) => [item.metric.file, item])).values()) {
+    const source = path.join(fontsDir, metric.file);
+    if (!fs.existsSync(source)) {
+      if (strictSubtitleFonts()) throw new Error(`required subtitle font file is missing: ${source}`);
+      continue;
+    }
+    if (!registeredBundledFonts.has(subtitleCanvasFontAlias(metric))) {
+      if (!GlobalFonts.registerFromPath(source, subtitleCanvasFontAlias(metric)) && strictSubtitleFonts()) {
+        throw new Error(`failed to register exact subtitle font file: ${source}`);
+      }
+      registeredBundledFonts.add(subtitleCanvasFontAlias(metric));
+    }
   }
-  if (/^Noto\s+(?:Sans|Serif)\s+(?:TC|SC|HK)$/i.test(family)) {
-    // Windows' libass/DirectWrite path already matches Skia at 1.5. The
-    // production Linux/fontconfig path renders the same variable font about
-    // 12% larger, so apply the container-specific correction at runtime.
-    return { fontSize: process.platform === "linux" ? 1.34 : ASS_CANVAS_FONT_SCALE, horizontalPercent: 100 };
+  const isolatedDirectory = path.join(path.dirname(outputPath), "subtitle-fonts");
+  await fs.promises.mkdir(isolatedDirectory, { recursive: true });
+  for (const { metric } of new Map(requested.map((item) => [item.metric.file, item])).values()) {
+    const source = path.join(fontsDir, metric.file);
+    if (!fs.existsSync(source)) {
+      if (strictSubtitleFonts()) throw new Error(`required subtitle font file is missing: ${source}`);
+      continue;
+    }
+    await fs.promises.copyFile(source, path.join(isolatedDirectory, metric.file));
   }
-  return { fontSize: ASS_CANVAS_FONT_SCALE, horizontalPercent: 100 };
+  const fontconfigCache = path.join(path.dirname(outputPath), "fontconfig-cache");
+  await fs.promises.mkdir(fontconfigCache, { recursive: true });
+  await fs.promises.writeFile(path.join(path.dirname(outputPath), "fonts.conf"), [
+    "<?xml version=\"1.0\"?>",
+    "<!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">",
+    "<fontconfig>",
+    `  <dir>${escapeXml(isolatedDirectory.replace(/\\/g, "/"))}</dir>`,
+    `  <cachedir>${escapeXml(fontconfigCache.replace(/\\/g, "/"))}</cachedir>`,
+    "  <config><rescan><int>0</int></rescan></config>",
+    "</fontconfig>",
+  ].join("\n"), "utf8");
+  return isolatedDirectory;
 }
 
 function assRunText(
@@ -526,11 +691,11 @@ function assDialogueText(
   scaleX: number,
   scaleY: number,
   positionY = style.positionY,
-  horizontalPercent = assFontMetricScale(style.fontFamily).horizontalPercent,
+  horizontalPercent = 100,
   renderMode: "crisp" | "glow" = "crisp",
 ): string {
   const scale = Math.min(scaleX, scaleY);
-  const fontMetric = assFontMetricScale(style.fontFamily);
+  const fontSizeScale = assFontMetricScale(style.fontFamily, style.fontWeight);
   // libass sizes CJK glyphs from the font's em square, while Canvas `px`
   // sizing uses the CSS text box. With the bundled Noto Sans TC face that
   // makes an uncorrected ASS caption about one third smaller than the editor.
@@ -545,7 +710,7 @@ function assDialogueText(
     // measured background rectangle.
     "\\q2",
     `\\pos(${(style.positionX * scaleX).toFixed(2)},${(positionY * scaleY).toFixed(2)})`,
-    `\\fs${(style.fontSize * scale * fontMetric.fontSize).toFixed(2)}`,
+    `\\fs${(style.fontSize * scale * fontSizeScale).toFixed(2)}`,
     `\\fscx${horizontalPercent.toFixed(2)}`,
     `\\fsp${(style.letterSpacing * scaleX).toFixed(2)}`,
   ].join("");
@@ -558,60 +723,25 @@ function assLineHorizontalPercent(
   canvasWidth: number,
   text: string,
   style: SubtitleCanvasStyle,
-  track?: "source" | "translated",
+  runs?: SubtitleCanvasRun[],
+  backgroundContentWidth?: number,
 ): number {
-  const basePercent = assFontMetricScale(style.fontFamily).horizontalPercent;
-  const measuredWidth = measureSubtitleCanvasTextWidth(ctx, text, style);
-  if (measuredWidth <= 0) return basePercent;
-  // `prewrapped` means that the editor chose the line break; it does not mean
-  // that the line is allowed to escape the caption box. This is especially
-  // important for ASS export because libass and Canvas can have slightly
-  // different glyph advances. Keep the final line inside the same content
-  // width used by the Canvas renderer, for every font and platform.
+  const canvasMeasuredWidth = runs?.length
+    ? runs.reduce((width, run) => width + measureSubtitleCanvasTextWidth(ctx, run.text, style) * Math.max(0.01, run.scale ?? 1), 0)
+    : measureSubtitleCanvasTextWidth(ctx, text, style);
+  const openTypeMeasuredWidth = runs?.length
+    ? runs.reduce((width, run) => width + measureOpenTypeTextWidth(run.text, style) * Math.max(0.01, run.scale ?? 1), 0)
+    : measureOpenTypeTextWidth(text, style);
+  const estimatedAssWidth = Math.max(canvasMeasuredWidth, openTypeMeasuredWidth);
+  if (estimatedAssWidth <= 0) return 100;
+  // Canvas and ASS now use the same font file and the OpenType Win/em scale.
+  // This last guard is deliberately script-neutral: if the resulting line is
+  // still wider than the Canvas content box, scale the complete line uniformly.
   const maximumWidth = Math.max(style.fontSize, Math.min(canvasWidth, style.maxWidth));
   const maximumTextWidth = Math.max(style.fontSize, maximumWidth - style.backgroundPaddingX * 2);
-  const maxWidthCorrection = Math.min(1, maximumTextWidth / measuredWidth);
-  if (process.platform !== "linux") return basePercent * maxWidthCorrection;
-  const family = assFontFamily(style.fontFamily);
-  if (/^Noto\s+(?:Sans|Serif)\s+JP$/i.test(family)) {
-    // Noto JP's libass advances track Canvas closely through 36px, then grow
-    // progressively wider at larger sizes. This curve comes from the Linux
-    // production matrix at every editor stop (14..72px), including the real
-    // long Japanese source cue that previously escaped its background.
-    return Math.max(84, basePercent - Math.max(0, style.fontSize - 36) * 0.22) * maxWidthCorrection;
-  }
-  if (!/^Noto\s+(?:Sans|Serif)\s+(?:TC|SC|HK)$/i.test(family)) return basePercent * maxWidthCorrection;
-
-  const foreignRuns: string[] = text.match(/[\p{Script=Latin}\p{Script=Hangul}\p{Script=Hiragana}\p{Script=Katakana}0-9]+/gu) ?? [];
-  const foreignWidth = foreignRuns.reduce<number>(
-    (width, run) => width + measureSubtitleCanvasTextWidth(ctx, run, { ...style, letterSpacing: 0 }),
-    0,
-  );
-  const foreignFraction = Math.max(0, Math.min(1, foreignWidth / measuredWidth));
-  // Linux libass makes all-Latin source text in the bundled TC variable font
-  // about 1.56x the Canvas width. Mixed translated captions do not have that
-  // expansion, so preserve their smaller calibration and apply the measured
-  // correction only to predominantly foreign-script source lines.
-  const isPredominantlyForeignSource = track === "source" && foreignFraction >= 0.75;
-  const expectedExpansion = isPredominantlyForeignSource
-    ? 1 + Math.min(0.56, foreignFraction * 0.56)
-    : 1 + Math.min(0.18, foreignFraction * 0.3);
-  // At the largest editor stops libass's Latin advances grow slightly faster
-  // than Skia's. Keep 14..48px unchanged and add at most a small high-size
-  // correction, measured by the 60px and 72px Linux raster matrix.
-  const largeFontCorrection = isPredominantlyForeignSource
-    ? 1 / (1 + Math.max(0, style.fontSize - 48) * 0.0015)
-    : 1;
-  const metricCorrection = 1 / expectedExpansion;
-  return basePercent * metricCorrection * largeFontCorrection * maxWidthCorrection;
+  const contentWidth = Math.max(style.fontSize, Math.min(maximumTextWidth, backgroundContentWidth ?? maximumTextWidth));
+  return Math.min(100, contentWidth / estimatedAssWidth * 100);
 }
-
-/**
- * libass interprets Fontsize against the font em square. Canvas/CSS `px`
- * sizing is visibly larger for the bundled CJK fonts, so an uncorrected ASS
- * export is roughly one third smaller than the browser preview.
- */
-const ASS_CANVAS_FONT_SCALE = 1.5;
 
 function assStyleLine(
   cueIndex: number,
@@ -624,7 +754,7 @@ function assStyleLine(
   const scaleX = outputWidth / specWidth;
   const scaleY = outputHeight / specHeight;
   const scale = Math.min(scaleX, scaleY);
-  const fontMetric = assFontMetricScale(style.fontFamily);
+  const fontSizeScale = assFontMetricScale(style.fontFamily, style.fontWeight);
   const halfWidth = Math.min(specWidth, style.maxWidth) / 2;
   const marginLeft = Math.max(0, Math.round((style.positionX - halfWidth) * scaleX));
   const marginRight = Math.max(0, Math.round((specWidth - style.positionX - halfWidth) * scaleX));
@@ -641,7 +771,7 @@ function assStyleLine(
   return [
     `Style: Cue${cueIndex}`,
     assFontFamily(style.fontFamily),
-    (style.fontSize * scale * fontMetric.fontSize).toFixed(2),
+    (style.fontSize * scale * fontSizeScale).toFixed(2),
     assColor(style.color, style.opacity),
     assColor(style.color, style.opacity),
     outlineColor,
@@ -736,11 +866,8 @@ export async function writeSubtitleAssFile(
   signal?: AbortSignal,
 ): Promise<string> {
   throwIfRenderAborted(signal);
-  initializeSubtitleFonts([...new Set(spec.cues.flatMap((cue) => [
-    assFontFamily(cue.style.fontFamily),
-    subtitleFontFamilyForText(cue.style.fontFamily, cue.text, cue.track),
-  ]))]);
   await fs.promises.mkdir(path.dirname(outputPath), { recursive: true });
+  await prepareExactSubtitleFonts(spec, outputPath);
   const intervals = subtitleTimelineIntervals(spec);
   if (!intervals.length) throw new Error("subtitle timeline is empty");
   const scaleX = outputWidth / spec.width;
@@ -754,7 +881,10 @@ export async function writeSubtitleAssFile(
     cueIndex,
     {
       ...cue.style,
-      fontFamily: subtitleFontFamilyForText(cue.style.fontFamily, cue.text, cue.track),
+      fontFamily: subtitleCanvasFontAlias(subtitleFontRecord(
+        subtitleFontFamilyForText(cue.style.fontFamily, cue.text, cue.track),
+        cue.style.fontWeight,
+      )),
     },
     spec.width,
     spec.height,
@@ -808,7 +938,10 @@ export async function writeSubtitleAssFile(
         if (!frame.text) continue;
         let renderedStyle = {
           ...frame.style,
-          fontFamily: subtitleFontFamilyForText(frame.style.fontFamily, frame.text, cue.track),
+          fontFamily: subtitleCanvasFontAlias(subtitleFontRecord(
+            subtitleFontFamilyForText(cue.style.fontFamily, cue.text, cue.track),
+            frame.style.fontWeight,
+          )),
         };
         let bounds = renderSubtitleCanvas(
           measurementContext,
@@ -871,7 +1004,8 @@ export async function writeSubtitleAssFile(
               spec.width,
               lineText,
               renderedStyle,
-              cue.track,
+              lineRuns,
+              bounds.width - renderedStyle.backgroundPaddingX * 2,
             );
             if (lineRuns.some((run) => Boolean(run.glowColor))) {
               pendingDialogue.push([
@@ -918,7 +1052,14 @@ export async function writeSubtitleAssFile(
                 scaleX,
                 scaleY,
                 lineY,
-                assLineHorizontalPercent(measurementContext, spec.width, line, renderedStyle, cue.track),
+                assLineHorizontalPercent(
+                  measurementContext,
+                  spec.width,
+                  line,
+                  renderedStyle,
+                  undefined,
+                  bounds.width - renderedStyle.backgroundPaddingX * 2,
+                ),
               ),
             ].join(","));
           }
@@ -953,7 +1094,8 @@ function escapeFfmpegFilterPath(filePath: string): string {
 }
 
 export function subtitleAssFilter(assPath: string): string {
-  const fontsDir = subtitleFontsDirectory();
+  const isolatedFonts = path.join(path.dirname(assPath), "subtitle-fonts");
+  const fontsDir = fs.existsSync(isolatedFonts) ? isolatedFonts : subtitleFontsDirectory();
   const filename = escapeFfmpegFilterPath(assPath);
   const fonts = fontsDir ? `:fontsdir='${escapeFfmpegFilterPath(fontsDir)}'` : "";
   return `ass=filename='${filename}'${fonts}`;
@@ -992,7 +1134,11 @@ export async function renderSubtitleVideo(
     ...videoEncoderArguments(encoder, options.quality),
     ...(options.frameRate === "source" ? [] : ["-r", String(options.frameRate)]),
     "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-progress", "pipe:1", "-nostats", outputPath,
-  ], onProgress, signal);
+  ], onProgress, signal, {
+    ...process.env,
+    FONTCONFIG_FILE: path.join(renderDir, "fonts.conf"),
+    FONTCONFIG_PATH: renderDir,
+  });
 
   if (selection.encoder === "libx264") {
     logger.info({ encoder: selection.encoder, mode: selection.mode, options }, "[subtitleVideoRenderer] export encoder selected");
@@ -1013,4 +1159,3 @@ export async function renderSubtitleVideo(
     await encode("libx264");
   }
 }
-
