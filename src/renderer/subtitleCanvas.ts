@@ -702,11 +702,12 @@ function renderSubtitleRuns(
   const width = measuredWidth + dynamicScaleExtra + (style.backgroundPaddingX + horizontalEffects) * 2;
   const contentOverflow = Math.max(0, measuredWidth - maximumTextWidth);
   const dynamicLift = lines.some((line) => line.some((run) => run.offsetY != null)) ? MAX_DYNAMIC_RUN_LIFT : 0;
-  // Scaling an active run grows it about its centre vertically as well. The
-  // line box already carries (lineHeight - 1) of slack, so reserve only the
-  // shortfall — at the default 1.375 leading this is correctly zero.
+  // Scaling an active run grows it about its centre vertically as well. Do not
+  // count line-height leading as guaranteed ink space: Linux and Windows font
+  // rasterizers place CJK glyphs differently inside the em box. Reserving the
+  // complete half-growth on both sides keeps the invariant platform-neutral.
   const dynamicScaleLift = hasDynamicScale
-    ? Math.max(0, (style.fontSize * (MAX_DYNAMIC_RUN_SCALE - style.lineHeight)) / 2)
+    ? Math.ceil(style.fontSize * (MAX_DYNAMIC_RUN_SCALE - 1) / 2) + 1
     : 0;
   const underlined = style.underline || lines.some((line) => line.some((run) => Boolean(run.underlineColor)));
   const verticalEffects = Math.max(0, style.outline)
