@@ -558,6 +558,7 @@ function assLineHorizontalPercent(
   canvasWidth: number,
   text: string,
   style: SubtitleCanvasStyle,
+  track?: "source" | "translated",
 ): number {
   const basePercent = assFontMetricScale(style.fontFamily).horizontalPercent;
   const measuredWidth = measureSubtitleCanvasTextWidth(ctx, text, style);
@@ -587,14 +588,22 @@ function assLineHorizontalPercent(
     0,
   );
   const foreignFraction = Math.max(0, Math.min(1, foreignWidth / measuredWidth));
-  // Linux libass makes Latin/kana/hangul runs in the bundled TC variable font
-  // wider than Skia. The background is content-sized, not maxWidth-sized, so
-  // this correction must apply to every mixed-script line. Applying it only
-  // when a line approached maxWidth left shorter proper-name captions (for
-  // example "Hearts to Hearts ... Carmen") visibly outside their box.
-  const expectedExpansion = 1 + Math.min(0.18, foreignFraction * 0.3);
+  // Linux libass makes all-Latin source text in the bundled TC variable font
+  // about 1.56x the Canvas width. Mixed translated captions do not have that
+  // expansion, so preserve their smaller calibration and apply the measured
+  // correction only to predominantly foreign-script source lines.
+  const isPredominantlyForeignSource = track === "source" && foreignFraction >= 0.75;
+  const expectedExpansion = isPredominantlyForeignSource
+    ? 1 + Math.min(0.56, foreignFraction * 0.56)
+    : 1 + Math.min(0.18, foreignFraction * 0.3);
+  // At the largest editor stops libass's Latin advances grow slightly faster
+  // than Skia's. Keep 14..48px unchanged and add at most a small high-size
+  // correction, measured by the 60px and 72px Linux raster matrix.
+  const largeFontCorrection = isPredominantlyForeignSource
+    ? 1 / (1 + Math.max(0, style.fontSize - 48) * 0.0015)
+    : 1;
   const metricCorrection = 1 / expectedExpansion;
-  return basePercent * metricCorrection * maxWidthCorrection;
+  return basePercent * metricCorrection * largeFontCorrection * maxWidthCorrection;
 }
 
 /**
@@ -862,6 +871,7 @@ export async function writeSubtitleAssFile(
               spec.width,
               lineText,
               renderedStyle,
+              cue.track,
             );
             if (lineRuns.some((run) => Boolean(run.glowColor))) {
               pendingDialogue.push([
@@ -908,7 +918,7 @@ export async function writeSubtitleAssFile(
                 scaleX,
                 scaleY,
                 lineY,
-                assLineHorizontalPercent(measurementContext, spec.width, line, renderedStyle),
+                assLineHorizontalPercent(measurementContext, spec.width, line, renderedStyle, cue.track),
               ),
             ].join(","));
           }
