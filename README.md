@@ -56,7 +56,7 @@ docker compose up -d --remove-orphans
 目前映像：
 
 ```text
-billlin0904/puretext:render-worker-0.1.12
+billlin0904/puretext:render-worker-0.1.13
 billlin0904/puretext:render-worker-latest
 ```
 
@@ -64,6 +64,13 @@ billlin0904/puretext:render-worker-latest
 
 容器內可用 `GET http://127.0.0.1:9090/version` 讀取版本、commit 與建置時間；
 相同資訊也會隨 heartbeat 回報 PureText API。
+
+## 字幕渲染路由
+
+- 一般字幕、逐字變色、簡單 Karaoke：保留 ASS/libass 路徑。
+- 彈跳、縮放、位移、旋轉語意與動態光暈：使用 Canvas RGBA 字幕帶，再由 FFmpeg overlay 與 NVENC 合成。
+- Canvas 動畫先固定每個 run 的基礎座標；每幀只改作用中字的繪製矩陣，不重新排版整行。
+- 本機可用 `npm run smoke:canvas` 產生短片，驗證 Canvas → RGBA pipe → FFmpeg 的完整路徑。
 
 ## GPU.TW 不使用自訂 Docker 映像
 

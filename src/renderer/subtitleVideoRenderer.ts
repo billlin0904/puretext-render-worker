@@ -20,6 +20,7 @@ import {
   type SubtitleTimestampedWord,
 } from "./subtitleCanvas.js";
 import { logger } from "../logger.js";
+import { renderCanvasRgbaVideo, usesCanvasRgba } from "./canvasRgbaRenderer.js";
 
 export type VideoRenderCueStyle = SubtitleCanvasStyle;
 
@@ -1112,21 +1113,50 @@ export async function renderSubtitleVideo(
   signal?: AbortSignal,
 ): Promise<void> {
   throwIfRenderAborted(signal);
-  const assPath = await writeSubtitleAssFile(
-    spec,
-    path.join(renderDir, "subtitles.ass"),
-    options.width,
-    options.height,
-    onPreparingProgress,
-    signal,
-  );
+  const canvasCues = spec.cues.filter((cue) => usesCanvasRgba(cue.dynamic?.preset));
+  const assCues = spec.cues.filter((cue) => !usesCanvasRgba(cue.dynamic?.preset));
+  const assPath = assCues.length
+    ? await writeSubtitleAssFile(
+        { ...spec, cues: assCues },
+        path.join(renderDir, "subtitles.ass"),
+        options.width,
+        options.height,
+        onPreparingProgress,
+        signal,
+      )
+    : undefined;
   throwIfRenderAborted(signal);
   const selection = await selectVideoEncoder(options.gpuAcceleration);
+
+  if (canvasCues.length) {
+    const canvasSpec = { ...spec, cues: canvasCues };
+    const encodeCanvas = (encoder: SubtitleVideoEncoder) => renderCanvasRgbaVideo({
+      inputPath,
+      outputPath,
+      spec: canvasSpec,
+      options,
+      encoder,
+      assFilter: assPath ? subtitleAssFilter(assPath) : undefined,
+      onProgress,
+      signal,
+    });
+    try {
+      logger.info({ encoder: selection.encoder, mode: selection.mode, options, canvasCues: canvasCues.length, assCues: assCues.length }, "[subtitleVideoRenderer] hybrid Canvas RGBA export selected");
+      await encodeCanvas(selection.encoder);
+    } catch (error) {
+      throwIfRenderAborted(signal);
+      if (selection.encoder !== "h264_nvenc" || !selection.allowCpuFallback) throw error;
+      logger.warn({ err: error }, "[subtitleVideoRenderer] Canvas RGBA NVENC failed; retrying with libx264");
+      await fs.promises.rm(outputPath, { force: true });
+      await encodeCanvas("libx264");
+    }
+    return;
+  }
 
   const baseArguments = [
       "-hide_banner", "-loglevel", "error", "-y", "-i", inputPath,
       "-filter_complex",
-      `[0:v]scale=${options.width}:${options.height}:force_original_aspect_ratio=decrease,pad=${options.width}:${options.height}:(ow-iw)/2:(oh-ih)/2[base];[base]${subtitleAssFilter(assPath)}[outv]`,
+      `[0:v]scale=${options.width}:${options.height}:force_original_aspect_ratio=decrease,pad=${options.width}:${options.height}:(ow-iw)/2:(oh-ih)/2[base];[base]${subtitleAssFilter(assPath!)}[outv]`,
       "-map", "[outv]", "-map", "0:a?",
   ];
   const encode = (encoder: SubtitleVideoEncoder) => runFfmpeg([

@@ -25,7 +25,7 @@ jobs:
           context: .
           platforms: linux/amd64
           load: true
-          tags: billlin0904/puretext:render-worker-0.1.9
+          tags: billlin0904/puretext:render-worker-0.1.13
           cache-from: type=gha
 
       - name: Pull PureText and test dependencies
@@ -36,7 +36,7 @@ jobs:
 
       - name: Export images
         run: |
-          docker save billlin0904/puretext:render-worker-0.1.9 | gzip -1 > worker-image.tar.gz
+          docker save billlin0904/puretext:render-worker-0.1.13 | gzip -1 > worker-image.tar.gz
           docker save billlin0904/puretext:api-v0.5.2 | gzip -1 > api-image.tar.gz
           docker save postgres:16-alpine redis:7-alpine | gzip -1 > dependencies.tar.gz
 

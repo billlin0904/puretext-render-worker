@@ -609,6 +609,33 @@ function layoutCanvasRuns(
   return lines.length ? lines : [[]];
 }
 
+/** Base run geometry used by rendering and regression tests. Animated scale
+ * and offset are intentionally excluded: they are paint transforms and must
+ * never move neighbouring runs. */
+export function subtitleCanvasRunPositions(
+  ctx: CanvasContext,
+  canvasWidth: number,
+  style: SubtitleCanvasStyle,
+  runs: SubtitleCanvasRun[],
+): Array<{ text: string; line: number; left: number; width: number }> {
+  ctx.save();
+  ctx.font = fontValue(style);
+  const maximumWidth = Math.max(style.fontSize, Math.min(canvasWidth, style.maxWidth));
+  const maximumTextWidth = Math.max(style.fontSize, maximumWidth - style.backgroundPaddingX * 2);
+  const lines = layoutCanvasRuns(ctx, runs, maximumTextWidth, style.letterSpacing, style.prewrapped ?? false);
+  const positions = lines.flatMap((line, lineIndex) => {
+    const lineWidth = line.reduce((sum, run) => sum + run.width, 0);
+    let left = style.positionX - lineWidth / 2;
+    return line.map((run) => {
+      const position = { text: run.text, line: lineIndex, left, width: run.width };
+      left += run.width;
+      return position;
+    });
+  });
+  ctx.restore();
+  return positions;
+}
+
 /**
  * Return the exact run-level line breaks used by the Canvas preview. Export
  * backends need the styled runs, not only the concatenated `bounds.lines`, so

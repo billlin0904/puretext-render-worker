@@ -12,7 +12,7 @@ export class ApiClient {
       headers: {
         authorization: `Bearer ${this.token}`,
         "content-type": "application/json",
-        "user-agent": "puretext-render-worker/0.1",
+        "user-agent": "puretext-render-worker/0.1.13",
         ...init.headers,
       },
     });
