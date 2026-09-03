@@ -340,6 +340,13 @@ export type SubtitleCanvasBounds = {
   lines: string[];
   /** Top edge of the line box after background/effect insets. */
   contentTop?: number;
+  /**
+   * How far the widest line exceeds the content box, in design pixels. Wrapping
+   * is supposed to keep this at 0; a positive value means a line could not be
+   * broken (for example a single grapheme wider than the box) and callers may
+   * want to log it. The background still grows to contain the ink either way.
+   */
+  contentOverflow?: number;
 };
 
 type CanvasContext = SKRSContext2D;
@@ -348,6 +355,18 @@ type PositionedRun = SubtitleCanvasRun & { width: number };
 
 const MAX_DYNAMIC_RUN_SCALE = 1.22;
 const MAX_DYNAMIC_RUN_LIFT = 7;
+
+/**
+ * Underlines are drawn below the line's centre, outside the advance box. At the
+ * default 1.375 leading they still land inside the line box, but a tight
+ * `lineHeight` pushes them past the last line and out of the background.
+ */
+function underlineExtent(style: SubtitleCanvasStyle, underlined: boolean): number {
+  if (!underlined) return 0;
+  const offset = style.fontSize * 0.46;
+  const thickness = Math.max(2, style.fontSize * 0.09);
+  return Math.max(0, offset + thickness - (style.fontSize * style.lineHeight) / 2);
+}
 
 function rgba(hex: string, opacity: number): string {
   const value = hex.replace("#", "");
@@ -411,6 +430,29 @@ function tokensFor(line: string): string[] {
   return line.match(/[\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]|\s+|[^\s\u3400-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]+/gu) ?? [line];
 }
 
+// CJK line-breaking rules (\u7981\u5247\u51e6\u7406). Breaking at every CJK character is what
+// makes the wrapper safe, but it also lets closing punctuation fall to the
+// start of a line and opening brackets dangle at the end.
+const NO_LINE_START = /^[)\]}\uff09\uff3d\uff5d\u3015\u3009\u300b\u300d\u300f\u3011\u3017\u3019\u3001\u3002\uff0c\uff0e\uff1a\uff1b\uff01\uff1f!?,.:;\u2026\u2025\u30fc\u30fc\u301c\uff5e%\uff05]/u;
+const NO_LINE_END = /[([{\uff08\uff3b\uff5b\u3014\u3008\u300a\u300c\u300e\u3010\u3016\u3018]$/u;
+
+/**
+ * Decide whether the token about to start a new line should drag its
+ * predecessor down with it. Hanging the punctuation over the edge would read
+ * better typographically but breaks the width invariant, so the line is pushed
+ * out (\u8ffd\u3044\u51fa\u3057) instead \u2014 and only when the pair still fits.
+ */
+function shouldCarryPreviousToken(
+  ctx: CanvasContext,
+  previous: string,
+  next: string,
+  maxTextWidth: number,
+  letterSpacing: number,
+): boolean {
+  if (!NO_LINE_START.test(next) && !NO_LINE_END.test(previous)) return false;
+  return textWidth(ctx, previous + next, letterSpacing) <= maxTextWidth;
+}
+
 function splitOversizedToken(
   ctx: CanvasContext,
   token: string,
@@ -441,20 +483,27 @@ function wrapSubtitleParagraph(
 ): string[] {
   if (!paragraph) return [""];
   const output: string[] = [];
-  let line = "";
+  let line: string[] = [];
   for (const originalToken of tokensFor(paragraph)) {
     const tokenParts = splitOversizedToken(ctx, originalToken, maxTextWidth, letterSpacing);
     for (const tokenPart of tokenParts) {
-      const candidate = line + tokenPart;
-      if (line && textWidth(ctx, candidate, letterSpacing) > maxTextWidth) {
-        output.push(line.trimEnd());
-        line = tokenPart.trimStart();
+      const candidate = line.join("") + tokenPart;
+      if (line.length && textWidth(ctx, candidate, letterSpacing) > maxTextWidth) {
+        const previous = line.at(-1) ?? "";
+        const carry = line.length > 1
+          && shouldCarryPreviousToken(ctx, previous, tokenPart, maxTextWidth, letterSpacing)
+          ? line.pop()
+          : undefined;
+        output.push(line.join("").trimEnd());
+        line = carry ? [carry] : [];
+        const next = line.length ? tokenPart : tokenPart.trimStart();
+        if (next) line.push(next);
       } else {
-        line = candidate;
+        line.push(tokenPart);
       }
     }
   }
-  output.push(line.trimEnd());
+  output.push(line.join("").trimEnd());
   return output;
 }
 
@@ -539,11 +588,19 @@ function layoutCanvasRuns(
       if (!text) continue;
       let width = textWidth(ctx, text, letterSpacing);
       if (lineWidth > 0 && lineWidth + width > maxWidth) {
-        lines.push([]);
-        lineWidth = 0;
-        text = text.trimStart();
-        if (!text) continue;
-        width = textWidth(ctx, text, letterSpacing);
+        const currentLine = lines[lines.length - 1]!;
+        const previous = currentLine.at(-1);
+        const carry = currentLine.length > 1 && previous
+          && shouldCarryPreviousToken(ctx, previous.text, text, maxWidth, letterSpacing)
+          ? currentLine.pop()
+          : undefined;
+        lines.push(carry ? [carry] : []);
+        lineWidth = carry?.width ?? 0;
+        if (!carry) {
+          text = text.trimStart();
+          if (!text) continue;
+          width = textWidth(ctx, text, letterSpacing);
+        }
       }
       lines[lines.length - 1]!.push({ ...run, text, width });
       lineWidth += width;
@@ -633,13 +690,30 @@ function renderSubtitleRuns(
   const dynamicScaleExtra = hasDynamicScale
     ? Math.max(0, ...lines.flatMap((line) => line.map((run) => run.width))) * (MAX_DYNAMIC_RUN_SCALE - 1)
     : 0;
-  const horizontalEffects = Math.max(0, style.outline) + inkOverhang;
-  const width = Math.min(
-    canvasWidth,
-    measuredWidth + dynamicScaleExtra + (style.backgroundPaddingX + horizontalEffects) * 2,
-  );
+  // Active-word glow is painted as a Canvas shadow around the glyph, so it
+  // reaches past the advance box on every side and has to be reserved too.
+  const glowExtent = Math.max(0, ...lines.flatMap((line) => line.map((run) => (
+    run.glowColor ? Math.max(10, run.glowBlur ?? style.fontSize * 0.24) : 0
+  ))));
+  const horizontalEffects = Math.max(0, style.outline) + inkOverhang + glowExtent;
+  // The background is content sized and is never capped. Clamping the box while
+  // leaving the glyphs unclamped is exactly the defect this module exists to
+  // prevent, so an unbreakable line widens the box instead of escaping it.
+  const width = measuredWidth + dynamicScaleExtra + (style.backgroundPaddingX + horizontalEffects) * 2;
+  const contentOverflow = Math.max(0, measuredWidth - maximumTextWidth);
   const dynamicLift = lines.some((line) => line.some((run) => run.offsetY != null)) ? MAX_DYNAMIC_RUN_LIFT : 0;
-  const verticalEffects = Math.max(0, style.outline) + dynamicLift;
+  // Scaling an active run grows it about its centre vertically as well. The
+  // line box already carries (lineHeight - 1) of slack, so reserve only the
+  // shortfall — at the default 1.375 leading this is correctly zero.
+  const dynamicScaleLift = hasDynamicScale
+    ? Math.max(0, (style.fontSize * (MAX_DYNAMIC_RUN_SCALE - style.lineHeight)) / 2)
+    : 0;
+  const underlined = style.underline || lines.some((line) => line.some((run) => Boolean(run.underlineColor)));
+  const verticalEffects = Math.max(0, style.outline)
+    + dynamicLift
+    + dynamicScaleLift
+    + glowExtent
+    + underlineExtent(style, underlined);
   const height = lines.length * lineHeight
     + (style.backgroundPaddingY + verticalEffects) * 2;
   const left = style.positionX - width / 2;
@@ -705,6 +779,7 @@ function renderSubtitleRuns(
     height,
     lines: lines.map((line) => line.map((run) => run.text).join("")),
     contentTop: top + style.backgroundPaddingY + verticalEffects,
+    contentOverflow,
   };
 }
 
@@ -744,8 +819,10 @@ export function renderSubtitleCanvas(
     textInkOverhang(ctx, line, textWidth(ctx, line, style.letterSpacing))
   )));
   const horizontalEffects = Math.max(0, style.outline) + inkOverhang;
-  const width = Math.min(canvasWidth, measuredWidth + (style.backgroundPaddingX + horizontalEffects) * 2);
-  const verticalEffects = Math.max(0, style.outline);
+  // Content sized, never capped. See the matching note in renderSubtitleRuns.
+  const width = measuredWidth + (style.backgroundPaddingX + horizontalEffects) * 2;
+  const contentOverflow = Math.max(0, measuredWidth - maximumTextWidth);
+  const verticalEffects = Math.max(0, style.outline) + underlineExtent(style, style.underline);
   const height = lines.length * lineHeight + (style.backgroundPaddingY + verticalEffects) * 2;
   const left = style.positionX - width / 2;
   const top = style.positionY - height / 2;
@@ -786,8 +863,8 @@ export function renderSubtitleCanvas(
     height,
     lines,
     contentTop: top + style.backgroundPaddingY + verticalEffects,
+    contentOverflow,
   };
 }
 
 import type { SKRSContext2D } from "@napi-rs/canvas";
-
