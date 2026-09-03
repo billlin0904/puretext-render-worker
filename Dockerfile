@@ -7,10 +7,16 @@ COPY src ./src
 RUN npm run build
 
 FROM node:24-bookworm-slim AS runtime
+ARG SERVICE_VERSION=0.1.10
+ARG SERVICE_COMMIT=unknown
+ARG SERVICE_BUILT_AT=unknown
 ENV NODE_ENV=production \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,video,utility \
-    PURETEXT_VIDEO_ENCODER=nvenc
+    PURETEXT_VIDEO_ENCODER=nvenc \
+    RENDER_WORKER_VERSION=${SERVICE_VERSION} \
+    SERVICE_COMMIT=${SERVICE_COMMIT} \
+    SERVICE_BUILT_AT=${SERVICE_BUILT_AT}
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates ffmpeg fontconfig fonts-noto-cjk tini \
     && rm -rf /var/lib/apt/lists/*

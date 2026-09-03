@@ -7,6 +7,16 @@ const config = loadConfig();
 const worker = new RenderWorker(config);
 
 const healthServer = http.createServer((req, res) => {
+  if (req.url === "/version") {
+    res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+    res.end(JSON.stringify({
+      service: "puretext-render-worker",
+      version: config.version,
+      commit: config.commit,
+      builtAt: config.builtAt,
+    }));
+    return;
+  }
   if (req.url !== "/healthz") {
     res.writeHead(404).end();
     return;

@@ -12,6 +12,8 @@ test("loads a bounded production configuration", () => {
   });
   assert.equal(config.apiBase, "https://puretext.audio-io.com");
   assert.equal(config.concurrency, 8);
+  assert.equal(config.version, "0.1.10");
+  assert.equal(config.commit, null);
 });
 
 test("rejects an insecure remote API", () => {

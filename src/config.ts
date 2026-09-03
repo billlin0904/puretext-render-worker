@@ -9,6 +9,8 @@ export type WorkerConfig = {
   healthPort: number;
   maxInputBytes: number;
   version: string;
+  commit: string | null;
+  builtAt: string | null;
 };
 
 function required(name: string, env: NodeJS.ProcessEnv): string {
@@ -39,6 +41,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
     cacheRoot: path.resolve(env["RENDER_CACHE_ROOT"]?.trim() || "/var/lib/puretext-render-worker"),
     healthPort: boundedInteger(env["HEALTH_PORT"], 9090, 1024, 65535),
     maxInputBytes: boundedInteger(env["VIDEO_RENDER_MAX_INPUT_BYTES"], 10 * 1024 ** 3, 1, 50 * 1024 ** 3),
-    version: env["RENDER_WORKER_VERSION"]?.trim() || "0.1.9",
+    version: env["RENDER_WORKER_VERSION"]?.trim() || "0.1.10",
+    commit: env["SERVICE_COMMIT"]?.trim() || null,
+    builtAt: env["SERVICE_BUILT_AT"]?.trim() || null,
   };
 }

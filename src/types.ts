@@ -49,6 +49,8 @@ export type WorkerStatus = {
   activeJobs: string[];
   concurrency: number;
   version: string;
+  commit: string | null;
+  builtAt: string | null;
   telemetry?: GpuTelemetry;
 };
 

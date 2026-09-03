@@ -27,6 +27,8 @@ export class RenderWorker {
       activeJobs: [...this.active.keys()],
       concurrency: this.config.concurrency,
       version: this.config.version,
+      commit: this.config.commit,
+      builtAt: this.config.builtAt,
       ...(this.telemetry ? { telemetry: this.telemetry } : {}),
     };
   }
